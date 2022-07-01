@@ -1,11 +1,11 @@
 use std::{
     fs,
-    path::{Path, PathBuf}, time::Instant, sync::{Arc, Mutex},
+    path::{Path, PathBuf}, sync::{Arc, Mutex},
 };
 
 use bevy::utils::HashMap;
 use image::{open, DynamicImage, GenericImageView, ImageBuffer, Pixel, Rgba, RgbaImage};
-use simple_anvil::{block::Block, chunk::Chunk, region::Region};
+use simple_anvil::{block::Block, chunk::Chunk};
 
 mod models;
 

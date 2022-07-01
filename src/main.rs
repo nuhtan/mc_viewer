@@ -1,8 +1,7 @@
 use std::{
-    f32::consts::PI,
     fs::{self, DirEntry},
-    os::windows::thread,
-    path::PathBuf, time::Instant, sync::{Arc, Mutex},
+    path::PathBuf,
+    sync::{Arc, Mutex},
 };
 
 use bevy::{
@@ -11,12 +10,11 @@ use bevy::{
     prelude::*,
     render::camera::Camera2d,
     tasks::{AsyncComputeTaskPool, Task},
-    transform, utils::HashMap,
+    utils::HashMap,
 };
 
 use bevy_egui::{egui, EguiContext, EguiPlugin};
 use futures_lite::future;
-use image::{open, ImageBuffer, Rgba};
 use render::render_chunk;
 use simple_anvil::region::Region;
 
@@ -27,7 +25,7 @@ enum Zoom {
     One,
     Two,
     Three,
-    Four
+    Four,
 }
 
 impl Default for Zoom {
@@ -40,11 +38,9 @@ impl Default for Zoom {
 struct UIState {
     save_name: String,
     save_path: String,
-    rendering: bool,
-    exit: bool,
     loading: bool,
     zoom: Zoom,
-    rendering_count: u32
+    rendering_count: u32,
 }
 
 impl UIState {
@@ -105,16 +101,19 @@ fn setup(mut commands: Commands) {
 fn egui(
     mut egui_context: ResMut<EguiContext>,
     mut ui_state: ResMut<UIState>,
-    mut commands: Commands,
+    commands: Commands,
     thread_pool: Res<AsyncComputeTaskPool>,
-    mut transforms: ParamSet<(Query<&mut Transform, With<Camera2d>>, Query<&Transform>)>,
+    transforms: ParamSet<(Query<&mut Transform, With<Camera2d>>, Query<&Transform>)>,
     windows: Res<Windows>,
 ) {
     let mut load = false;
     egui::Window::new("Please Input World Directory").show(egui_context.ctx_mut(), |ui| {
         ui.text_edit_singleline(&mut ui_state.save_path);
         load = ui.button("Load World").clicked();
-        ui.label(format!("Currently rendering: {} chunks", ui_state.rendering_count));
+        ui.label(format!(
+            "Currently rendering: {} chunks",
+            ui_state.rendering_count
+        ));
     });
 
     if load {
@@ -144,7 +143,8 @@ fn determine_chunks(
         for x in (loc_chunks.0 - (chunks_width / 2.0)) as i32 - ui_state.zoom_enumerated() as i32
             ..(loc_chunks.0 + (chunks_width / 2.0)) as i32 + ui_state.zoom_enumerated() as i32
         {
-            for y in (loc_chunks.1 - (chunks_height / 2.0)) as i32 - ui_state.zoom_enumerated() as i32
+            for y in (loc_chunks.1 - (chunks_height / 2.0)) as i32
+                - ui_state.zoom_enumerated() as i32
                 ..(loc_chunks.1 + (chunks_height / 2.0)) as i32 + ui_state.zoom_enumerated() as i32
             {
                 chunks.push((x, y));
@@ -160,14 +160,13 @@ fn determine_chunks(
             let s_name = ui_state.save_name.clone();
             let cache = texture_cache.clone();
             let task = thread_pool.spawn(async move {
-                let start = Instant::now();
                 let region_coords = (
                     (chunk_coords.0 as f64 / 32 as f64).floor(),
                     (chunk_coords.1 as f64 / 32 as f64).floor(),
                 );
                 path.push_str("\\region");
                 let dir = fs::read_dir(path).unwrap();
-                let end = match dir
+                match dir
                     .filter(|f| {
                         f.as_ref().unwrap().path().file_name().unwrap()
                             == format!("r.{}.{}.mca", region_coords.0, region_coords.1).as_str()
@@ -243,7 +242,7 @@ fn determine_chunks(
                                         region.filename,
                                         region_path.to_path_buf(),
                                         s_name,
-                                        cache
+                                        cache,
                                     ))
                                 } else {
                                     None // Chunk not fully rendered
@@ -253,9 +252,7 @@ fn determine_chunks(
                         }
                     }
                     None => None, // Region file does not exist
-                };
-                println!("Render task took: {}ms", start.elapsed().as_millis());
-                return end;
+                }
             });
             commands.spawn().insert(task);
         }
@@ -264,19 +261,14 @@ fn determine_chunks(
 }
 
 fn grab_mouse(
-    mut commands: Commands,
-    thread_pool: Res<AsyncComputeTaskPool>,
     mut windows: ResMut<Windows>,
     mouse_button: Res<Input<MouseButton>>,
     mut mouse_motion: EventReader<MouseMotion>,
     mut cameras: Query<(&mut Transform, With<Camera2d>)>,
-    mut ui_state: ResMut<UIState>,
-    // mut windowsPass: Res<Windows>,
+    ui_state: ResMut<UIState>,
 ) {
     let window = windows.get_primary_mut().unwrap();
     if mouse_button.just_pressed(MouseButton::Left) {
-        
-        
         window.set_cursor_visibility(false);
     }
 
@@ -289,13 +281,21 @@ fn grab_mouse(
         for event in mouse_motion.iter() {
             let delta = event.delta;
             for (mut transform, _) in cameras.iter_mut() {
-                transform.translation = Vec3::new(transform.translation.x - delta.x * ui_state.zoom_enumerated() as f32, transform.translation.y + delta.y * ui_state.zoom_enumerated() as f32, transform.translation.z);
+                transform.translation = Vec3::new(
+                    transform.translation.x - delta.x * ui_state.zoom_enumerated() as f32,
+                    transform.translation.y + delta.y * ui_state.zoom_enumerated() as f32,
+                    transform.translation.z,
+                );
             }
         }
     }
 }
 
-fn zoom(mut mouse_wheel_events: EventReader<MouseWheel>, mut ui_state: ResMut<UIState>, mut projections: Query<(&mut OrthographicProjection, With<Camera2d>)>) {
+fn zoom(
+    mut mouse_wheel_events: EventReader<MouseWheel>,
+    mut ui_state: ResMut<UIState>,
+    mut projections: Query<(&mut OrthographicProjection, With<Camera2d>)>,
+) {
     for event in mouse_wheel_events.iter() {
         let zoom = if event.y == 1.0 {
             ui_state.zoom_in()
@@ -305,17 +305,9 @@ fn zoom(mut mouse_wheel_events: EventReader<MouseWheel>, mut ui_state: ResMut<UI
             false
         };
         if zoom {
-            for (mut projection, _ ) in projections.iter_mut() {
-                println!("{}", projection.scale);
-                let mut log_scale = projection.scale.ln();
-                log_scale = match ui_state.zoom {
-                    Zoom::One => 1.0,
-                    Zoom::Two => 2.0,
-                    Zoom::Three => 4.0,
-                    Zoom::Four => 8.0,
-                };
-                projection.scale = log_scale;
-                // transform.translation = Vec3::new(transform.translation.x, transform.translation.y, );
+            for (mut projection, _) in projections.iter_mut() {
+                let zoom_scale = ui_state.zoom_enumerated() as f32;
+                projection.scale = zoom_scale;
             }
         }
     }
@@ -325,7 +317,7 @@ fn handle_images_finished(
     mut commands: Commands,
     mut transform_tasks: Query<(Entity, &mut Task<Option<String>>)>,
     asset_server: Res<AssetServer>,
-    mut ui_state: ResMut<UIState>
+    mut ui_state: ResMut<UIState>,
 ) {
     for (entity, mut task) in transform_tasks.iter_mut() {
         if let Some(path) = future::block_on(futures_lite::future::poll_once(&mut *task)) {
@@ -360,7 +352,7 @@ fn handle_images_finished(
                         ..default()
                     });
                 }
-                None => () //println!("Unavailable chunk requested"),
+                None => (), //println!("Unavailable chunk requested"),
             }
             ui_state.rendering_count -= 1;
             commands.entity(entity).remove::<Task<Option<String>>>();
