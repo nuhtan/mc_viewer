@@ -1,3 +1,5 @@
+#![windows_subsystem = "windows"]
+
 use std::{
     fs::{self, DirEntry},
     path::PathBuf,
@@ -107,9 +109,11 @@ fn egui(
     windows: Res<Windows>,
 ) {
     let mut load = false;
+    let mut all = false;
     egui::Window::new("Please Input World Directory").show(egui_context.ctx_mut(), |ui| {
         ui.text_edit_singleline(&mut ui_state.save_path);
-        load = ui.button("Load World").clicked();
+        load = ui.button("Render Viewport").clicked();
+        all = ui.button("Render All Chunks").clicked();
         ui.label(format!(
             "Currently rendering: {} chunks",
             ui_state.rendering_count
@@ -119,6 +123,47 @@ fn egui(
     if load {
         ui_state.loading = true;
         determine_chunks(commands, thread_pool, transforms, windows, ui_state);
+    } else if all {
+        ui_state.loading = true;
+        render_all(commands, thread_pool, ui_state);
+    }
+}
+
+fn render_all(
+    mut commands: Commands,
+    thread_pool: Res<AsyncComputeTaskPool>,
+    mut ui_state: ResMut<UIState>,
+) {
+    let mut path = ui_state.save_path.clone();
+    path.push_str("\\region");
+    let dir = fs::read_dir(path).unwrap();
+    let regions = dir.map(|f| f.as_ref().unwrap().path()).collect::<Vec<PathBuf>>();
+    let texture_cache = Arc::new(Mutex::new(HashMap::new()));
+    
+    for region in regions {
+        let reg = Region::from_file(region.clone().to_str().unwrap().into());
+        for x in 0..32 {
+            for z in 0..32 {
+                let region_file_name = reg.filename.clone();
+                let region_path = region.clone();
+                let chunk = reg.get_chunk(x, z);
+                let cache = texture_cache.clone();
+                let s_name = ui_state.save_name.clone();
+                match chunk {
+                    Some(c) => {
+                        if c.get_status() == "full" {
+                            let task = thread_pool.spawn(async move {
+                                Some(render_chunk(c, region_file_name, region_path, s_name, cache))
+                            });
+                            commands.spawn().insert(task);
+                            ui_state.rendering_count += 1;
+                        }
+                    },
+                    None => (),
+                }
+                
+            }
+        }
     }
 }
 
@@ -140,12 +185,12 @@ fn determine_chunks(
             (window_height / (16.0 * 16.0) * ui_state.zoom_enumerated() as f32).ceil();
         let loc_chunks = (loc.x / (16.0 * 16.0), -loc.y / (16.0 * 16.0));
         let mut chunks = Vec::new();
-        for x in (loc_chunks.0 - (chunks_width / 2.0)) as i32 - ui_state.zoom_enumerated() as i32
-            ..(loc_chunks.0 + (chunks_width / 2.0)) as i32 + ui_state.zoom_enumerated() as i32
+        for x in (loc_chunks.0 - (chunks_width / 2.0)) as i32 - (ui_state.zoom_enumerated() as i32 / 2)
+            ..(loc_chunks.0 + (chunks_width / 2.0)) as i32 + (ui_state.zoom_enumerated() as i32 / 2)
         {
             for y in (loc_chunks.1 - (chunks_height / 2.0)) as i32
-                - ui_state.zoom_enumerated() as i32
-                ..(loc_chunks.1 + (chunks_height / 2.0)) as i32 + ui_state.zoom_enumerated() as i32
+                - (ui_state.zoom_enumerated() as i32 / 2)
+                ..(loc_chunks.1 + (chunks_height / 2.0)) as i32 + (ui_state.zoom_enumerated() as i32 / 2)
             {
                 chunks.push((x, y));
             }
@@ -225,14 +270,14 @@ fn determine_chunks(
                                                 >= *chunk.get_last_update()
                                             {
                                                 let content = rendered_chunk.first();
-                                                let hmm = match content {
-                                                    Some(thing) => match thing.path().to_str() {
-                                                        Some(anotha) => anotha.to_string(),
+                                                let path = match content {
+                                                    Some(entry) => match entry.path().to_str() {
+                                                        Some(entry_path) => entry_path.to_string(),
                                                         None => todo!(),
                                                     },
                                                     None => todo!(),
                                                 };
-                                                return Some(hmm);
+                                                return Some(path);
                                             }
                                         }
                                     }

@@ -1,6 +1,7 @@
 use std::{
     fs,
-    path::{Path, PathBuf}, sync::{Arc, Mutex},
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
 use bevy::utils::HashMap;
@@ -28,7 +29,7 @@ pub fn render_chunk(
     region_file_name: String,
     region_path: PathBuf,
     save_name: String,
-    texture_cache: Arc<Mutex<HashMap<String, DynamicImage>>>
+    texture_cache: Arc<Mutex<HashMap<String, DynamicImage>>>,
 ) -> String {
     let surface_map = chunk.get_heightmap(false).unwrap();
     let ocean_floor = chunk.get_heightmap(true).unwrap();
@@ -46,7 +47,12 @@ pub fn render_chunk(
                 );
             }
 
-            let mut texture = get_texture(&block, &region_file_name, &region_path, texture_cache.clone());
+            let mut texture = get_texture(
+                &block,
+                &region_file_name,
+                &region_path,
+                texture_cache.clone(),
+            );
             let dims = texture.dimensions();
             if dims.0 > 16 || dims.1 > 16 {
                 texture = texture.crop(0, 0, 16, 16);
@@ -63,7 +69,7 @@ pub fn render_chunk(
                 z as i32,
                 &region_file_name,
                 &region_path,
-                texture_cache
+                texture_cache,
             );
 
             image::imageops::overlay(
@@ -74,7 +80,7 @@ pub fn render_chunk(
             );
         }
     }
-    
+
     let mut path = format!(
         "{}\\saves\\{}\\{}",
         std::env::current_dir().unwrap().to_str().unwrap(),
@@ -155,12 +161,53 @@ fn merge_colors(block: Block, chunk: &Chunk, block_img: &mut ImageBuffer<Rgba<u8
             _ => {
                 println!("{}: {}", block.id, chunk.get_biome(19));
                 None
-            },
+            }
         },
         "oak_leaves" | "jungle_leaves" | "acacia_leaves" | "dark_oak_leaves" | "vines" => {
             match &chunk.get_biome(19).as_str()[10..] {
                 "badlands" | "wooded_badlands" | "eroded_badlands" => {
-                    Some(image::Rgb([252, 186, 3]))
+                    Some(image::Rgb([158, 128, 77]))
+                }
+                "desert" | "savanna" | "savanna_plateau" | "windswept_savanna"
+                | "nether_wastes" | "soul_sand_valley" | "crimson_forest" | "warped_forest"
+                | "basalt_deltas" => Some(image::Rgb([174, 164, 42])),
+                "stony_peaks" => Some(image::Rgb([130, 172, 30])),
+                "jungle" | "bamboo_jungle" => Some(image::Rgb([48, 187, 11])),
+                "sparse_jungle" => Some(image::Rgb([62, 184, 15])),
+                "mushroom_fields" => Some(image::Rgb([43, 187, 15])),
+                "swamp" => Some(image::Rgb([106, 112, 57])),
+                "plains" | "sunflower_plains" | "beach" | "dripstone_caves" => {
+                    Some(image::Rgb([119, 171, 47]))
+                }
+                "forest" | "flower_forest" | "dark_forest" => Some(image::Rgb([89, 174, 48])),
+                "birch_forest" | "old_growth_birch_forest" => Some(image::Rgb([107, 169, 65])),
+                "ocean"
+                | "deep_ocean"
+                | "warm _ocean"
+                | "lukewarm_ocean"
+                | "deep Lukewarm_ocean"
+                | "cold_ocean"
+                | "deep_cold_ocean"
+                | "deep_frozen_ocean"
+                | "river"
+                | "lush_caves"
+                | "the_end"
+                | "small_end_islands"
+                | "end_barrens"
+                | "end_midlands"
+                | "end_highlands"
+                | "the_void" => Some(image::Rgb([113, 167, 77])),
+                "meadow" => Some(image::Rgb([99, 169, 72])),
+                "old_growth_pine_taiga" => Some(image::Rgb([104, 165, 95])),
+                "taiga" | "old_growth_spruce_taiga" => Some(image::Rgb([104, 164, 100])),
+                "windswept_hills"
+                | "windswept_gravelly_hills"
+                | "windswept_forest"
+                | "stony_shore" => Some(image::Rgb([109, 163, 107])),
+                "snowy_beach" => Some(image::Rgb([100, 162, 120])),
+                "snowy_plains" | "ice_spikes" | "snowy_taiga" | "frozen_ocean" | "frozen_river"
+                | "grove" | "snowy_slopes" | "frozen_peaks" | "jagged_peaks" => {
+                    Some(image::Rgb([96, 161, 123]))
                 }
                 _ => None,
             }
@@ -227,6 +274,8 @@ fn merge_colors(block: Block, chunk: &Chunk, block_img: &mut ImageBuffer<Rgba<u8
             "meadow" => Some(image::Rgb([14, 78, 207])),
             _ => None,
         },
+        "spruce_leaves" => Some(image::Rgb([97, 153, 97])),
+        "birch_leaves" => Some(image::Rgb([128, 167, 85])),
         _ => None,
     };
     match color {
@@ -254,7 +303,7 @@ fn merge_background(
     z: i32,
     region_file_name: &String,
     region_path: &PathBuf,
-    texture_cache: Arc<Mutex<HashMap<String, DynamicImage>>>
+    texture_cache: Arc<Mutex<HashMap<String, DynamicImage>>>,
 ) {
     let mut y = y - 1;
     let mut below = chunk.get_block(x, y, z);
@@ -277,15 +326,19 @@ fn merge_background(
     *block_img = background_img;
 }
 
-fn get_texture(b: &Block, region_file_name: &String, region_path: &PathBuf, texture_cache: Arc<Mutex<HashMap<String, DynamicImage>>>) -> DynamicImage {
+fn get_texture(
+    b: &Block,
+    region_file_name: &String,
+    region_path: &PathBuf,
+    texture_cache: Arc<Mutex<HashMap<String, DynamicImage>>>,
+) -> DynamicImage {
     let water = Block::from_name("minecraft:water".into(), b.coords, None);
     let block = if b.id == "bubble_column" { &water } else { &b };
     let mut cache = texture_cache.lock().unwrap();
 
     let mut tex = if cache.contains_key(&block.id) {
         cache.get(&block.id).unwrap().clone()
-    }
-     else if Path::new(&format!(
+    } else if Path::new(&format!(
         "./assets/minecraft/textures/block/{}.png",
         block.id
     ))
@@ -294,7 +347,8 @@ fn get_texture(b: &Block, region_file_name: &String, region_path: &PathBuf, text
         let img = open(format!(
             "./assets/minecraft/textures/block/{}.png",
             block.id
-        )).unwrap();
+        ))
+        .unwrap();
         cache.insert(block.id.clone(), img.clone());
         img
     } else if Path::new(&format!(
@@ -306,7 +360,8 @@ fn get_texture(b: &Block, region_file_name: &String, region_path: &PathBuf, text
         let img = open(format!(
             "./assets/minecraft/textures/block/{}_top.png",
             block.id
-        )).unwrap();
+        ))
+        .unwrap();
         cache.insert(block.id.clone(), img.clone());
         img
     } else if Path::new(&format!(
@@ -318,7 +373,8 @@ fn get_texture(b: &Block, region_file_name: &String, region_path: &PathBuf, text
         let img = open(format!(
             "./assets/minecraft/textures/block/{}_still.png",
             block.id
-        )).unwrap();
+        ))
+        .unwrap();
         cache.insert(block.id.clone(), img.clone());
         img
     } else if Path::new(&format!(
@@ -330,7 +386,8 @@ fn get_texture(b: &Block, region_file_name: &String, region_path: &PathBuf, text
         let img = open(format!(
             "./assets/minecraft/textures/block/{}.png",
             block.id.split("_").collect::<Vec<&str>>()[0]
-        )).unwrap();
+        ))
+        .unwrap();
         cache.insert(block.id.clone(), img.clone());
         img
     } else if Path::new(&format!(
@@ -342,7 +399,8 @@ fn get_texture(b: &Block, region_file_name: &String, region_path: &PathBuf, text
         let img = open(format!(
             "./assets/minecraft/textures/block/{}_down_tip.png",
             block.id
-        )).unwrap();
+        ))
+        .unwrap();
         cache.insert(block.id.clone(), img.clone());
         img
     } else if fs::read_dir("./assets/minecraft/textures/block/")
@@ -408,7 +466,8 @@ fn get_texture(b: &Block, region_file_name: &String, region_path: &PathBuf, text
                 .unwrap()
                 .to_str()
                 .unwrap()
-        )).unwrap();
+        ))
+        .unwrap();
         cache.insert(block.id.clone(), img.clone());
         img
     } else if block.id.contains("fence") {

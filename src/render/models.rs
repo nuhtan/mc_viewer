@@ -83,7 +83,11 @@ pub fn generate_fence_texture(
             region.get_block(x, y, z - 512).unwrap()
         } else {
             // The block is still within the original region
-            let region = Region::from_file(format!("{}\\{}", region_folder.to_str().unwrap(), region_file_name.to_string()));
+            let region = Region::from_file(format!(
+                "{}\\{}",
+                region_folder.to_str().unwrap(),
+                region_file_name.to_string()
+            ));
             region.get_block(x, y, z).unwrap()
         };
 
@@ -118,7 +122,7 @@ pub fn generate_fence_texture(
                         }
                     }
                 }
-                _ => unreachable!("This should be hardcoded bruh"),
+                _ => unreachable!("This is hardcoded and should be unreachable"),
             }
         }
     }
