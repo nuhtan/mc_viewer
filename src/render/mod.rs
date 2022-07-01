@@ -1,8 +1,9 @@
 use std::{
     fs,
-    path::{Path, PathBuf}, time::Instant,
+    path::{Path, PathBuf}, time::Instant, sync::{Arc, Mutex},
 };
 
+use bevy::utils::HashMap;
 use image::{open, DynamicImage, GenericImageView, ImageBuffer, Pixel, Rgba, RgbaImage};
 use simple_anvil::{block::Block, chunk::Chunk, region::Region};
 
@@ -27,6 +28,7 @@ pub fn render_chunk(
     region_file_name: String,
     region_path: PathBuf,
     save_name: String,
+    texture_cache: Arc<Mutex<HashMap<String, DynamicImage>>>
 ) -> String {
     let surface_map = chunk.get_heightmap(false).unwrap();
     let ocean_floor = chunk.get_heightmap(true).unwrap();
@@ -34,10 +36,9 @@ pub fn render_chunk(
     let mut chunk_image = RgbaImage::new(256, 256);
     for x in 0..16 {
         for z in 0..16 {
-            let start = Instant::now();
+            let texture_cache = texture_cache.clone();
             let y = surface_map[16 * z + x];
             let block = chunk.get_block(x as i32, y, z as i32);
-            println!("Getting original block took: {}ns", start.elapsed().as_nanos());
             if block.id == "cave_air" {
                 println!(
                     "Cave Air could be: {}",
@@ -45,9 +46,7 @@ pub fn render_chunk(
                 );
             }
 
-            let start = Instant::now();
-            let mut texture = get_texture(&block, &region_file_name, &region_path);
-            println!("Getting texture took: {}ns", start.elapsed().as_nanos());
+            let mut texture = get_texture(&block, &region_file_name, &region_path, texture_cache.clone());
             let dims = texture.dimensions();
             if dims.0 > 16 || dims.1 > 16 {
                 texture = texture.crop(0, 0, 16, 16);
@@ -55,10 +54,7 @@ pub fn render_chunk(
 
             let mut block_img = texture.into_rgba8();
 
-            let start = Instant::now();
             merge_colors(block, &chunk, &mut block_img);
-            println!("Merging colors took: {}ns", start.elapsed().as_nanos());
-            let start = Instant::now();
             merge_background(
                 &mut block_img,
                 &chunk,
@@ -67,8 +63,8 @@ pub fn render_chunk(
                 z as i32,
                 &region_file_name,
                 &region_path,
+                texture_cache
             );
-            println!("Merging background took: {}ns", start.elapsed().as_nanos());
 
             image::imageops::overlay(
                 &mut chunk_image,
@@ -258,6 +254,7 @@ fn merge_background(
     z: i32,
     region_file_name: &String,
     region_path: &PathBuf,
+    texture_cache: Arc<Mutex<HashMap<String, DynamicImage>>>
 ) {
     let mut y = y - 1;
     let mut below = chunk.get_block(x, y, z);
@@ -265,7 +262,7 @@ fn merge_background(
         y -= 1;
         below = chunk.get_block(x, y, z);
     }
-    let mut background_tex = get_texture(&below, region_file_name, region_path);
+    let mut background_tex = get_texture(&below, region_file_name, region_path, texture_cache);
 
     let dims = background_tex.dimensions();
     if dims.0 > 16 || dims.1 > 16 {
@@ -280,63 +277,74 @@ fn merge_background(
     *block_img = background_img;
 }
 
-fn get_texture(b: &Block, region_file_name: &String, region_path: &PathBuf) -> DynamicImage {
-    let start = Instant::now();
+fn get_texture(b: &Block, region_file_name: &String, region_path: &PathBuf, texture_cache: Arc<Mutex<HashMap<String, DynamicImage>>>) -> DynamicImage {
     let water = Block::from_name("minecraft:water".into(), b.coords, None);
     let block = if b.id == "bubble_column" { &water } else { &b };
-    println!("Dumb stuff took {}ns", start.elapsed().as_nanos());
+    let mut cache = texture_cache.lock().unwrap();
 
-    let start = Instant::now();
-    let mut tex = if Path::new(&format!(
+    let mut tex = if cache.contains_key(&block.id) {
+        cache.get(&block.id).unwrap().clone()
+    }
+     else if Path::new(&format!(
         "./assets/minecraft/textures/block/{}.png",
         block.id
     ))
     .exists()
     {
-        open(format!(
+        let img = open(format!(
             "./assets/minecraft/textures/block/{}.png",
             block.id
-        ))
+        )).unwrap();
+        cache.insert(block.id.clone(), img.clone());
+        img
     } else if Path::new(&format!(
         "./assets/minecraft/textures/block/{}_top.png",
         block.id
     ))
     .exists()
     {
-        open(format!(
+        let img = open(format!(
             "./assets/minecraft/textures/block/{}_top.png",
             block.id
-        ))
+        )).unwrap();
+        cache.insert(block.id.clone(), img.clone());
+        img
     } else if Path::new(&format!(
         "./assets/minecraft/textures/block/{}_still.png",
         block.id
     ))
     .exists()
     {
-        open(format!(
+        let img = open(format!(
             "./assets/minecraft/textures/block/{}_still.png",
             block.id
-        ))
+        )).unwrap();
+        cache.insert(block.id.clone(), img.clone());
+        img
     } else if Path::new(&format!(
         "./assets/minecraft/textures/block/{}.png",
         block.id.split("_").collect::<Vec<&str>>()[0]
     ))
     .exists()
     {
-        open(format!(
+        let img = open(format!(
             "./assets/minecraft/textures/block/{}.png",
             block.id.split("_").collect::<Vec<&str>>()[0]
-        ))
+        )).unwrap();
+        cache.insert(block.id.clone(), img.clone());
+        img
     } else if Path::new(&format!(
         "./assets/minecraft/textures/block/{}_down_tip.png",
         block.id
     ))
     .exists()
     {
-        open(format!(
+        let img = open(format!(
             "./assets/minecraft/textures/block/{}_down_tip.png",
             block.id
-        ))
+        )).unwrap();
+        cache.insert(block.id.clone(), img.clone());
+        img
     } else if fs::read_dir("./assets/minecraft/textures/block/")
         .unwrap()
         .any(|f| {
@@ -391,7 +399,7 @@ fn get_texture(b: &Block, region_file_name: &String, region_path: &PathBuf) -> D
                 )
                 .unwrap()
         });
-        open(format!(
+        let img = open(format!(
             "./assets/minecraft/textures/block/{}.png",
             variants
                 .last()
@@ -400,22 +408,23 @@ fn get_texture(b: &Block, region_file_name: &String, region_path: &PathBuf) -> D
                 .unwrap()
                 .to_str()
                 .unwrap()
-        ))
+        )).unwrap();
+        cache.insert(block.id.clone(), img.clone());
+        img
     } else if block.id.contains("fence") {
-        models::generate_fence_texture(block, region_file_name, region_path)
+        let img = models::generate_fence_texture(block, region_file_name, region_path).unwrap();
+        cache.insert(block.id.clone(), img.clone());
+        img
     } else {
         println!("found block : {}", block.id);
-        // panic!("no texture available, this needs to be fixed")
         let mut tex = RgbaImage::new(16, 16);
         for x in 0..16 {
             for z in 0..16 {
                 tex.put_pixel(x, z, Rgba([0, 0, 0, 1]))
             }
         }
-        Ok(DynamicImage::ImageRgba8(tex))
-    }
-    .unwrap();
-    println!("Dumb ifs took {}ns", start.elapsed().as_nanos());
+        DynamicImage::ImageRgba8(tex)
+    };
 
     // If the block texture is greater than 16x16 then we only use a single 16x16 section, this is the case for animated blocks such as water
     let dims = tex.dimensions();

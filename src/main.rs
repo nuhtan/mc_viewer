@@ -2,7 +2,7 @@ use std::{
     f32::consts::PI,
     fs::{self, DirEntry},
     os::windows::thread,
-    path::PathBuf, time::Instant,
+    path::PathBuf, time::Instant, sync::{Arc, Mutex},
 };
 
 use bevy::{
@@ -11,7 +11,7 @@ use bevy::{
     prelude::*,
     render::camera::Camera2d,
     tasks::{AsyncComputeTaskPool, Task},
-    transform,
+    transform, utils::HashMap,
 };
 
 use bevy_egui::{egui, EguiContext, EguiPlugin};
@@ -151,20 +151,23 @@ fn determine_chunks(
             }
         }
         ui_state.rendering_count += chunks.len() as u32;
+        let texture_cache = Arc::new(Mutex::new(HashMap::new()));
         for chunk_coords in chunks {
             let mut path = ui_state.save_path.clone();
             let mut save_path = std::env::current_dir().unwrap();
             save_path.push("saves");
             save_path.push(format!("{}", ui_state.save_name));
             let s_name = ui_state.save_name.clone();
+            let cache = texture_cache.clone();
             let task = thread_pool.spawn(async move {
+                let start = Instant::now();
                 let region_coords = (
                     (chunk_coords.0 as f64 / 32 as f64).floor(),
                     (chunk_coords.1 as f64 / 32 as f64).floor(),
                 );
                 path.push_str("\\region");
                 let dir = fs::read_dir(path).unwrap();
-                match dir
+                let end = match dir
                     .filter(|f| {
                         f.as_ref().unwrap().path().file_name().unwrap()
                             == format!("r.{}.{}.mca", region_coords.0, region_coords.1).as_str()
@@ -240,6 +243,7 @@ fn determine_chunks(
                                         region.filename,
                                         region_path.to_path_buf(),
                                         s_name,
+                                        cache
                                     ))
                                 } else {
                                     None // Chunk not fully rendered
@@ -249,7 +253,9 @@ fn determine_chunks(
                         }
                     }
                     None => None, // Region file does not exist
-                }
+                };
+                println!("Render task took: {}ms", start.elapsed().as_millis());
+                return end;
             });
             commands.spawn().insert(task);
         }
@@ -354,7 +360,7 @@ fn handle_images_finished(
                         ..default()
                     });
                 }
-                None => println!("Unavailable chunk requested"),
+                None => () //println!("Unavailable chunk requested"),
             }
             ui_state.rendering_count -= 1;
             commands.entity(entity).remove::<Task<Option<String>>>();
