@@ -114,7 +114,7 @@ pub fn render_chunk(
 fn merge_colors(block: Block, chunk: &Chunk, block_img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>) {
     let color = match block.id.as_str() {
         "grass_block" | "grass" | "tall_grass" | "fern" | "large_fern" | "potted_fern"
-        | "sugar_cane" => match &chunk.get_biome(19).as_str()[10..] {
+        | "sugar_cane" => match &block.biome.as_str()[10..] {
             "badlands" | "wooded_badlands" | "eroded_badlands" => Some(image::Rgb([144, 129, 77])),
             "desert" | "savanna" | "savanna_plateau" | "windswept_savanna" | "nether_wastes"
             | "soul_sand_valley" | "crimson_forest" | "warped_forest" | "basalt_deltas" => {
@@ -159,12 +159,12 @@ fn merge_colors(block: Block, chunk: &Chunk, block_img: &mut ImageBuffer<Rgba<u8
                 Some(image::Rgb([128, 180, 151]))
             }
             _ => {
-                println!("{}: {}", block.id, chunk.get_biome(19));
+                println!("{}: {}", block.id, block.biome);
                 None
             }
         },
         "oak_leaves" | "jungle_leaves" | "acacia_leaves" | "dark_oak_leaves" | "vines" => {
-            match &chunk.get_biome(19).as_str()[10..] {
+            match &block.biome.as_str()[10..] {
                 "badlands" | "wooded_badlands" | "eroded_badlands" => {
                     Some(image::Rgb([158, 128, 77]))
                 }
@@ -212,7 +212,7 @@ fn merge_colors(block: Block, chunk: &Chunk, block_img: &mut ImageBuffer<Rgba<u8
                 _ => None,
             }
         }
-        "water" => match &chunk.get_biome(19).as_str()[10..] {
+        "water" => match &block.biome.as_str()[10..] {
             "badlands"
             | "bamboo_jungle"
             | "basalt_deltas"
@@ -332,7 +332,7 @@ fn get_texture(
     region_path: &PathBuf,
     texture_cache: Arc<Mutex<HashMap<String, DynamicImage>>>,
 ) -> DynamicImage {
-    let water = Block::from_name("minecraft:water".into(), b.coords, None);
+    let water = Block::from_name("minecraft:water".into(), b.coords, None, String::new());
     let block = if b.id == "bubble_column" { &water } else { &b };
     let mut cache = texture_cache.lock().unwrap();
 
