@@ -1,4 +1,4 @@
-#![windows_subsystem = "windows"]
+//#![windows_subsystem = "windows"]
 
 use std::{
     fs::{self, DirEntry},
@@ -17,6 +17,7 @@ use bevy::{
 
 use bevy_egui::{egui, EguiContext, EguiPlugin};
 use futures_lite::future;
+use image::{open, Rgba, RgbaImage};
 use render::render_chunk;
 use simple_anvil::region::Region;
 
@@ -43,6 +44,7 @@ struct UIState {
     loading: bool,
     zoom: Zoom,
     rendering_count: u32,
+    rendering_viewport: bool,
 }
 
 impl UIState {
@@ -91,7 +93,7 @@ fn main() {
         .add_system(egui)
         .add_system(grab_mouse)
         .add_system(drag_folder)
-        .add_system(handle_images_finished)
+        .add_system(handle_per_chunk_images)
         .add_system(zoom)
         .run();
 }
@@ -109,23 +111,29 @@ fn egui(
     windows: Res<Windows>,
 ) {
     let mut load = false;
+    let mut optimize = false;
     let mut all = false;
-    egui::Window::new("Please Input World Directory").show(egui_context.ctx_mut(), |ui| {
+    egui::Window::new("Drag Save Directory").show(egui_context.ctx_mut(), |ui| {
         ui.text_edit_singleline(&mut ui_state.save_path);
-        load = ui.button("Render Viewport").clicked();
-        all = ui.button("Render All Chunks").clicked();
-        ui.label(format!(
-            "Currently rendering: {} chunks",
-            ui_state.rendering_count
-        ));
+        if ui_state.save_path != "" {
+            ui.checkbox(&mut ui_state.rendering_viewport, "Render Current Viewport?");
+            optimize = ui.button("Optimize Tiles").clicked();
+            all = ui.button("Render All Chunks").clicked();
+            ui.label(format!(
+                "Currently rendering: {} chunks",
+                ui_state.rendering_count
+            ));
+        }
     });
 
-    if load {
+    if ui_state.rendering_viewport {
         ui_state.loading = true;
         determine_chunks(commands, thread_pool, transforms, windows, ui_state);
     } else if all {
         ui_state.loading = true;
         render_all(commands, thread_pool, ui_state);
+    } else if optimize {
+        optimize_tiles(ui_state.save_name.clone());
     }
 }
 
@@ -137,9 +145,11 @@ fn render_all(
     let mut path = ui_state.save_path.clone();
     path.push_str("\\region");
     let dir = fs::read_dir(path).unwrap();
-    let regions = dir.map(|f| f.as_ref().unwrap().path()).collect::<Vec<PathBuf>>();
+    let regions = dir
+        .map(|f| f.as_ref().unwrap().path())
+        .collect::<Vec<PathBuf>>();
     let texture_cache = Arc::new(Mutex::new(HashMap::new()));
-    
+
     for region in regions {
         let reg = Region::from_file(region.clone().to_str().unwrap().into());
         for x in 0..32 {
@@ -153,15 +163,20 @@ fn render_all(
                     Some(c) => {
                         if c.get_status() == "full" {
                             let task = thread_pool.spawn(async move {
-                                Some(render_chunk(c, region_file_name, region_path, s_name, cache))
+                                Some(render_chunk(
+                                    c,
+                                    region_file_name,
+                                    region_path,
+                                    s_name,
+                                    cache,
+                                ))
                             });
                             commands.spawn().insert(task);
                             ui_state.rendering_count += 1;
                         }
-                    },
+                    }
                     None => (),
                 }
-                
             }
         }
     }
@@ -185,12 +200,14 @@ fn determine_chunks(
             (window_height / (16.0 * 16.0) * ui_state.zoom_enumerated() as f32).ceil();
         let loc_chunks = (loc.x / (16.0 * 16.0), -loc.y / (16.0 * 16.0));
         let mut chunks = Vec::new();
-        for x in (loc_chunks.0 - (chunks_width / 2.0)) as i32 - (ui_state.zoom_enumerated() as i32 / 2)
+        for x in (loc_chunks.0 - (chunks_width / 2.0)) as i32
+            - (ui_state.zoom_enumerated() as i32 / 2)
             ..(loc_chunks.0 + (chunks_width / 2.0)) as i32 + (ui_state.zoom_enumerated() as i32 / 2)
         {
             for y in (loc_chunks.1 - (chunks_height / 2.0)) as i32
                 - (ui_state.zoom_enumerated() as i32 / 2)
-                ..(loc_chunks.1 + (chunks_height / 2.0)) as i32 + (ui_state.zoom_enumerated() as i32 / 2)
+                ..(loc_chunks.1 + (chunks_height / 2.0)) as i32
+                    + (ui_state.zoom_enumerated() as i32 / 2)
             {
                 chunks.push((x, y));
             }
@@ -301,7 +318,6 @@ fn determine_chunks(
             });
             commands.spawn().insert(task);
         }
-        // println!("{:?} {:?}", width_range, height_range);
     }
 }
 
@@ -358,7 +374,7 @@ fn zoom(
     }
 }
 
-fn handle_images_finished(
+fn handle_per_chunk_images(
     mut commands: Commands,
     mut transform_tasks: Query<(Entity, &mut Task<Option<String>>)>,
     asset_server: Res<AssetServer>,
@@ -429,5 +445,74 @@ fn drag_folder(mut events: EventReader<FileDragAndDrop>, mut ui_state: ResMut<UI
             // Hover and Cancel dragged files
             _ => (),
         }
+    }
+}
+
+// There are too many entities being created on the screen at one time, use the per chunk tiles to create
+// A smaller number of larger tiles, four tiles per region? 16x16 chunks = 16x16x16 pixels per side
+fn optimize_tiles(save_name: String) {
+    let mut dir = std::env::current_dir().unwrap();
+    dir.push("saves\\");
+    dir.push(save_name.clone());
+    for region_folder in dir.read_dir().unwrap().map(|f| f.unwrap()) {
+        println!(
+            "Region: {} started",
+            region_folder.file_name().to_str().unwrap()
+        );
+        let mut img = RgbaImage::new(512 * 16, 512 * 16);
+        for x in 0..32 {
+            for z in 0..32 {
+                let region_dir = region_folder.path().read_dir().unwrap();
+                let chunk = region_dir
+                    .filter(|f| {
+                        f.as_ref()
+                            .unwrap()
+                            .file_name()
+                            .to_str()
+                            .unwrap()
+                            .contains(format!("chunk{}.{}", x, z).as_str())
+                    })
+                    .map(|f| f.unwrap())
+                    .collect::<Vec<DirEntry>>();
+                if chunk.len() > 0 {
+                    // There exists a chunk
+                    let chunk_img_d = open(chunk[0].path()).unwrap();
+                    let chunk_img = chunk_img_d.as_rgba8().unwrap();
+                    for cx in 0..chunk_img.dimensions().0 {
+                        for cz in 0..chunk_img.dimensions().1 {
+                            img.put_pixel(
+                                x * 16 * 16 + cx,
+                                z * 16 * 16 + cz,
+                                *chunk_img.get_pixel(cx, cz),
+                            );
+                        }
+                    }
+
+                    // load file and place chunk into larger image
+                } else {
+                    // Nah cuh
+                    // place blank chunk into larger image, consider a checkerboard pattern
+                    for cx in 0..256 {
+                        for cz in 0..256 {
+                            let pixel = if ((cx / 16) % 2 == 0 && (cz / 16) % 2 == 1)
+                                || ((cx / 16) % 2 == 1 && (cz / 16) % 2 == 0)
+                            {
+                                Rgba::from([100, 100, 100, 255])
+                            } else {
+                                Rgba::from([150, 150, 150, 255])
+                            };
+                            img.put_pixel(x * 16 * 16 + cx, z * 16 * 16 + cz, pixel);
+                        }
+                    }
+                }
+            }
+        }
+        img.save(&format!(
+            "saves\\{}\\{}\\{}.png",
+            save_name,
+            region_folder.file_name().to_str().unwrap(),
+            region_folder.file_name().to_str().unwrap()
+        ))
+        .unwrap();
     }
 }
