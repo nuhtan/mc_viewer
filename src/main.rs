@@ -8,6 +8,7 @@ use std::{
 
 use bevy::{
     asset::AssetServerSettings,
+    ecs::query::WorldQuery,
     input::mouse::{MouseMotion, MouseWheel},
     prelude::*,
     render::camera::Camera2d,
@@ -45,6 +46,7 @@ struct UIState {
     zoom: Zoom,
     rendering_count: u32,
     rendering_viewport: bool,
+    viewport_moved: bool,
 }
 
 impl UIState {
@@ -80,6 +82,11 @@ impl UIState {
     }
 }
 
+#[derive(Component)]
+struct ChunkSpriteCoords((u32, u32));
+#[derive(Component)]
+struct ChunkSpriteRegionCoords((i32, i32));
+
 fn main() {
     App::new()
         .insert_resource(AssetServerSettings {
@@ -94,6 +101,7 @@ fn main() {
         .add_system(grab_mouse)
         .add_system(drag_folder)
         .add_system(handle_per_chunk_images)
+        .add_system(handle_per_region_images)
         .add_system(zoom)
         .run();
 }
@@ -109,6 +117,7 @@ fn egui(
     thread_pool: Res<AsyncComputeTaskPool>,
     transforms: ParamSet<(Query<&mut Transform, With<Camera2d>>, Query<&Transform>)>,
     windows: Res<Windows>,
+    tiles: Query<(Entity, With<Sprite>)>,
 ) {
     let mut load = false;
     let mut optimize = false;
@@ -127,13 +136,22 @@ fn egui(
     });
 
     if ui_state.rendering_viewport {
-        ui_state.loading = true;
-        determine_chunks(commands, thread_pool, transforms, windows, ui_state);
+        if !ui_state.loading && ui_state.viewport_moved {
+            ui_state.loading = true;
+            ui_state.viewport_moved = false;
+            determine_chunks(commands, thread_pool, transforms, windows, ui_state);
+        }
     } else if all {
         ui_state.loading = true;
         render_all(commands, thread_pool, ui_state);
     } else if optimize {
-        optimize_tiles(ui_state.save_name.clone());
+        optimize_tiles(
+            commands,
+            ui_state.save_name.clone(),
+            tiles,
+            thread_pool,
+            ui_state,
+        );
     }
 }
 
@@ -200,14 +218,11 @@ fn determine_chunks(
             (window_height / (16.0 * 16.0) * ui_state.zoom_enumerated() as f32).ceil();
         let loc_chunks = (loc.x / (16.0 * 16.0), -loc.y / (16.0 * 16.0));
         let mut chunks = Vec::new();
-        for x in (loc_chunks.0 - (chunks_width / 2.0)) as i32
-            - (ui_state.zoom_enumerated() as i32 / 2)
-            ..(loc_chunks.0 + (chunks_width / 2.0)) as i32 + (ui_state.zoom_enumerated() as i32 / 2)
+        for x in (loc_chunks.0 - chunks_width) as i32 - 1
+            ..(loc_chunks.0 + (chunks_width / 2.0)) as i32 + 1
         {
-            for y in (loc_chunks.1 - (chunks_height / 2.0)) as i32
-                - (ui_state.zoom_enumerated() as i32 / 2)
-                ..(loc_chunks.1 + (chunks_height / 2.0)) as i32
-                    + (ui_state.zoom_enumerated() as i32 / 2)
+            for y in (loc_chunks.1 - chunks_height) as i32 - 1
+                ..(loc_chunks.1 + (chunks_height / 2.0)) as i32 + 1
             {
                 chunks.push((x, y));
             }
@@ -223,8 +238,8 @@ fn determine_chunks(
             let cache = texture_cache.clone();
             let task = thread_pool.spawn(async move {
                 let region_coords = (
-                    (chunk_coords.0 as f64 / 32 as f64).floor(),
-                    (chunk_coords.1 as f64 / 32 as f64).floor(),
+                    (chunk_coords.0 as f32 / 32 as f32).floor(),
+                    (chunk_coords.1 as f32 / 32 as f32).floor(),
                 );
                 path.push_str("\\region");
                 let dir = fs::read_dir(path).unwrap();
@@ -270,6 +285,8 @@ fn determine_chunks(
                                             .map(|f| f.unwrap())
                                             .collect::<Vec<DirEntry>>();
                                         if rendered_chunk.len() > 0 {
+                                            // Check if the chunk is already in an existing entity
+                                            // let ent = &existing_tiles.iter().any(|(e, i)| i.coords.0 == chunk_coords.0 as u32 && i.coords.1 == chunk_coords.1 as u32);
                                             // Exists a rendered image
                                             if rendered_chunk
                                                 .first()
@@ -326,7 +343,7 @@ fn grab_mouse(
     mouse_button: Res<Input<MouseButton>>,
     mut mouse_motion: EventReader<MouseMotion>,
     mut cameras: Query<(&mut Transform, With<Camera2d>)>,
-    ui_state: ResMut<UIState>,
+    mut ui_state: ResMut<UIState>,
 ) {
     let window = windows.get_primary_mut().unwrap();
     if mouse_button.just_pressed(MouseButton::Left) {
@@ -335,7 +352,7 @@ fn grab_mouse(
 
     if mouse_button.just_released(MouseButton::Left) {
         window.set_cursor_visibility(true);
-        // determine_chunks(commands, thread_pool, transforms, windowsPass, ui_state);
+        ui_state.viewport_moved = true;
     }
 
     if mouse_button.pressed(MouseButton::Left) {
@@ -370,11 +387,12 @@ fn zoom(
                 let zoom_scale = ui_state.zoom_enumerated() as f32;
                 projection.scale = zoom_scale;
             }
+            ui_state.viewport_moved = true;
         }
     }
 }
 
-fn handle_per_chunk_images(
+fn handle_per_chunk_images<'b>(
     mut commands: Commands,
     mut transform_tasks: Query<(Entity, &mut Task<Option<String>>)>,
     asset_server: Res<AssetServer>,
@@ -401,22 +419,64 @@ fn handle_per_chunk_images(
                     let region_z = region_parts[2].parse::<f32>().unwrap();
                     let x = parts[0].parse::<f32>().unwrap();
                     let z = parts[1].parse::<f32>().unwrap();
-                    commands.spawn_bundle(SpriteBundle {
-                        texture: asset_server
-                            .load(&path_str.split("saves").collect::<Vec<&str>>()[1][1..]),
+                    commands
+                        .spawn_bundle(SpriteBundle {
+                            texture: asset_server
+                                .load(&path_str.split("saves").collect::<Vec<&str>>()[1][1..]),
 
-                        transform: Transform::from_xyz(
-                            x * 256.0 + 8192.0 * region_x + 128.0,
-                            (z * 256.0 + 8192.0 * region_z) * -1.0 - 128.0,
-                            1.0,
-                        ),
-                        ..default()
-                    });
+                            transform: Transform::from_xyz(
+                                x * 256.0 + 8192.0 * region_x + 128.0,
+                                (z * 256.0 + 8192.0 * region_z) * -1.0 - 128.0,
+                                1.0,
+                            ),
+                            ..default()
+                        })
+                        .insert(ChunkSpriteCoords((x as u32, z as u32)))
+                        .insert(ChunkSpriteRegionCoords((region_x as i32, region_z as i32)));
                 }
                 None => (), //println!("Unavailable chunk requested"),
             }
             ui_state.rendering_count -= 1;
+            if ui_state.rendering_count == 0 {
+                ui_state.loading = false;
+            }
             commands.entity(entity).remove::<Task<Option<String>>>();
+        }
+    }
+}
+
+fn handle_per_region_images(
+    mut commands: Commands,
+    mut transform_tasks: Query<(Entity, &mut Task<String>)>,
+    asset_server: Res<AssetServer>,
+    mut ui_state: ResMut<UIState>,
+) {
+    for (entity, mut task) in transform_tasks.iter_mut() {
+        if let Some(path) = future::block_on(futures_lite::future::poll_once(&mut *task)) {
+            let parts = path.split("\\").collect::<Vec<&str>>();
+            let region = parts[parts.len() - 2];
+            let region_parts = region.split(".").collect::<Vec<&str>>();
+            let region_x = region_parts[1].parse::<i32>().unwrap();
+            let region_z = region_parts[2].parse::<i32>().unwrap();
+            commands.spawn_bundle(SpriteBundle {
+                texture: asset_server.load(&format!(
+                    "{}\\saves{}",
+                    std::env::current_dir()
+                        .unwrap()
+                        .to_path_buf()
+                        .to_str()
+                        .unwrap(),
+                    &path[5..]
+                )),
+                transform: Transform::from_xyz(
+                    region_x as f32 * 8192.0 + (8192.0 / 2.0),
+                    (8192.0 * region_z as f32) * -1.0 - (8192.0 / 2.0),
+                    1.0,
+                ),
+                ..default()
+            });
+            commands.entity(entity).remove::<Task<String>>();
+            ui_state.rendering_count -= 1;
         }
     }
 }
@@ -450,69 +510,80 @@ fn drag_folder(mut events: EventReader<FileDragAndDrop>, mut ui_state: ResMut<UI
 
 // There are too many entities being created on the screen at one time, use the per chunk tiles to create
 // A smaller number of larger tiles, four tiles per region? 16x16 chunks = 16x16x16 pixels per side
-fn optimize_tiles(save_name: String) {
+fn optimize_tiles(
+    mut commands: Commands,
+    save_name: String,
+    tiles: Query<(Entity, With<Sprite>)>,
+    thread_pool: Res<AsyncComputeTaskPool>,
+    mut ui_state: ResMut<UIState>,
+) {
     let mut dir = std::env::current_dir().unwrap();
     dir.push("saves\\");
     dir.push(save_name.clone());
+    for (e, _) in tiles.iter() {
+        commands.entity(e).despawn();
+    }
     for region_folder in dir.read_dir().unwrap().map(|f| f.unwrap()) {
-        println!(
-            "Region: {} started",
-            region_folder.file_name().to_str().unwrap()
-        );
-        let mut img = RgbaImage::new(512 * 16, 512 * 16);
-        for x in 0..32 {
-            for z in 0..32 {
-                let region_dir = region_folder.path().read_dir().unwrap();
-                let chunk = region_dir
-                    .filter(|f| {
-                        f.as_ref()
-                            .unwrap()
-                            .file_name()
-                            .to_str()
-                            .unwrap()
-                            .contains(format!("chunk{}.{}", x, z).as_str())
-                    })
-                    .map(|f| f.unwrap())
-                    .collect::<Vec<DirEntry>>();
-                if chunk.len() > 0 {
-                    // There exists a chunk
-                    let chunk_img_d = open(chunk[0].path()).unwrap();
-                    let chunk_img = chunk_img_d.as_rgba8().unwrap();
-                    for cx in 0..chunk_img.dimensions().0 {
-                        for cz in 0..chunk_img.dimensions().1 {
-                            img.put_pixel(
-                                x * 16 * 16 + cx,
-                                z * 16 * 16 + cz,
-                                *chunk_img.get_pixel(cx, cz),
-                            );
+        let save_name = save_name.clone();
+        ui_state.rendering_count += 1;
+        let task = thread_pool.spawn(async move {
+            let mut img = RgbaImage::new(512 * 16, 512 * 16);
+            for x in 0..32 {
+                for z in 0..32 {
+                    let region_dir = region_folder.path().read_dir().unwrap();
+                    let chunk = region_dir
+                        .filter(|f| {
+                            f.as_ref()
+                                .unwrap()
+                                .file_name()
+                                .to_str()
+                                .unwrap()
+                                .contains(format!("chunk{}.{}", x, z).as_str())
+                        })
+                        .map(|f| f.unwrap())
+                        .collect::<Vec<DirEntry>>();
+                    if chunk.len() > 0 {
+                        // There exists a chunk
+                        let chunk_img_d = open(chunk[0].path()).unwrap();
+                        let chunk_img = chunk_img_d.as_rgba8().unwrap();
+                        for cx in 0..chunk_img.dimensions().0 {
+                            for cz in 0..chunk_img.dimensions().1 {
+                                img.put_pixel(
+                                    x * 16 * 16 + cx,
+                                    z * 16 * 16 + cz,
+                                    *chunk_img.get_pixel(cx, cz),
+                                );
+                            }
                         }
-                    }
 
-                    // load file and place chunk into larger image
-                } else {
-                    // Nah cuh
-                    // place blank chunk into larger image, consider a checkerboard pattern
-                    for cx in 0..256 {
-                        for cz in 0..256 {
-                            let pixel = if ((cx / 16) % 2 == 0 && (cz / 16) % 2 == 1)
-                                || ((cx / 16) % 2 == 1 && (cz / 16) % 2 == 0)
-                            {
-                                Rgba::from([100, 100, 100, 255])
-                            } else {
-                                Rgba::from([150, 150, 150, 255])
-                            };
-                            img.put_pixel(x * 16 * 16 + cx, z * 16 * 16 + cz, pixel);
+                        // load file and place chunk into larger image
+                    } else {
+                        // Nah cuh
+                        // place blank chunk into larger image, consider a checkerboard pattern
+                        for cx in 0..256 {
+                            for cz in 0..256 {
+                                let pixel = if ((cx / 16) % 2 == 0 && (cz / 16) % 2 == 1)
+                                    || ((cx / 16) % 2 == 1 && (cz / 16) % 2 == 0)
+                                {
+                                    Rgba::from([100, 100, 100, 255])
+                                } else {
+                                    Rgba::from([150, 150, 150, 255])
+                                };
+                                img.put_pixel(x * 16 * 16 + cx, z * 16 * 16 + cz, pixel);
+                            }
                         }
                     }
                 }
             }
-        }
-        img.save(&format!(
-            "saves\\{}\\{}\\{}.png",
-            save_name,
-            region_folder.file_name().to_str().unwrap(),
-            region_folder.file_name().to_str().unwrap()
-        ))
-        .unwrap();
+            let img_path = format!(
+                "saves\\{}\\{}\\{}.png",
+                save_name,
+                region_folder.file_name().to_str().unwrap(),
+                region_folder.file_name().to_str().unwrap()
+            );
+            img.save(&img_path).unwrap();
+            img_path
+        });
+        commands.spawn().insert(task);
     }
 }
